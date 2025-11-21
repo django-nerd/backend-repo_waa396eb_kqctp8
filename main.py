@@ -1,8 +1,9 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-app = FastAPI()
+app = FastAPI(title="Transfreight API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,13 +13,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+class QuoteRequest(BaseModel):
+    origin: str = Field(..., min_length=2, max_length=100)
+    destination: str = Field(..., min_length=2, max_length=100)
+    container: str = Field(..., pattern=r"^(FCL|LCL)$")
+
+
+class QuoteResponse(BaseModel):
+    estimate: str
+    currency: str = "USD"
+    transit_days: int
+    breakdown: dict
+    message: str
+
+
 @app.get("/")
 def read_root():
     return {"message": "Hello from FastAPI Backend!"}
 
+
 @app.get("/api/hello")
 def hello():
     return {"message": "Hello from the backend API!"}
+
+
+@app.post("/api/quote", response_model=QuoteResponse)
+def get_quote(payload: QuoteRequest):
+    """Lightweight quote estimator to power the landing page CTA.
+    This is a heuristic only and not a real rate engine.
+    """
+    # Very rough distance heuristic based on string difference and length
+    seed = abs(len(payload.origin) - len(payload.destination)) + sum(
+        abs(ord(a) - ord(b)) for a, b in zip(payload.origin.lower()[:3], payload.destination.lower()[:3])
+    )
+
+    base = 900 if payload.container == "LCL" else 2200
+    variability = (seed % 900)  # 0..899
+    fuel_surcharge = round(base * 0.12)
+    security = 45 if payload.container == "LCL" else 60
+    handling = 35 if payload.container == "LCL" else 50
+
+    subtotal = base + variability + fuel_surcharge + security + handling
+
+    # Simple transit time heuristic
+    transit_days = 18 + (seed % 17)  # 18..34 days
+
+    breakdown = {
+        "base": base,
+        "distance_factor": variability,
+        "fuel_surcharge": fuel_surcharge,
+        "security": security,
+        "handling": handling,
+    }
+
+    return QuoteResponse(
+        estimate=f"{subtotal:,}",
+        currency="USD",
+        transit_days=transit_days,
+        breakdown=breakdown,
+        message="Instant estimate generated. Final pricing may vary after verification.",
+    )
+
 
 @app.get("/test")
 def test_database():
@@ -58,7 +114,6 @@ def test_database():
         response["database"] = f"❌ Error: {str(e)[:50]}"
     
     # Check environment variables
-    import os
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
     
